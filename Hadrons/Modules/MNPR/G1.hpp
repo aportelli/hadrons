@@ -1,9 +1,38 @@
+/*
+ * G1.hpp, part of Hadrons (https://github.com/aportelli/Hadrons)
+ *
+ * Copyright (C) 2015 - 2020
+ *
+ * Author: Antonin Portelli <antonin.portelli@me.com>
+ * Author: Ryan Abbott <rabbott@mit.edu>
+ * Author: Fabian Joswig <fabian.joswig@wwu.de>
+ * Author: Felix Erben <felix.erben@ed.ac.uk>
+ *
+ * Hadrons is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * Hadrons is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Hadrons.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ * See the full license in the file "LICENSE" in the top level distribution 
+ * directory.
+ */
+
+/*  END LEGAL */
 #ifndef Hadrons_MNPR_G1_hpp_
 #define Hadrons_MNPR_G1_hpp_
 
 #include <Hadrons/Global.hpp>
 #include <Hadrons/Module.hpp>
 #include <Hadrons/ModuleFactory.hpp>
+#include <Hadrons/Modules/MNPR/NPRUtils.hpp>
 
 BEGIN_HADRONS_NAMESPACE
 
@@ -16,10 +45,10 @@ class G1Par: Serializable
 {
 public:
     GRID_SERIALIZABLE_CLASS_MEMBERS(G1Par,
-                                    std::string, Sin,
-                                    std::string, Sout,
-                                    std::string, pin,
-                                    std::string, pout,
+                                    std::string, qIn,
+                                    std::string, qOut,
+                                    std::string, pIn,
+                                    std::string, pOut,
                                     std::string, gauge,
                                     std::string, output);
 };
@@ -67,7 +96,7 @@ TG1<FImpl>::TG1(const std::string name)
 template <typename FImpl>
 std::vector<std::string> TG1<FImpl>::getInput(void)
 {
-    std::vector<std::string> in = { par().Sout, par().Sin, par().gauge };
+    std::vector<std::string> in = { par().qOut, par().qIn, par().gauge };
 
     return in;
 }
@@ -86,72 +115,64 @@ void TG1<FImpl>::setup(void)
 {
     LOG(Message) << "Running setup for G1" << std::endl;
 
-    envTmpLat(LatticeSpinColourMatrix, "bilinear");
+    envTmpLat(PropagatorField, "bilinear");
 
-    envTmpLat(LatticeComplex, "bilinear_phase");
-    envTmpLat(LatticeComplex, "coordinate");
+    envTmpLat(ComplexField, "bilinear_phase");
 
     envTmpLat(GaugeField, "dSdU");
-    envTmpLat(LatticeColourMatrix, "div_field_strength");
+    envTmpLat(ColourMatrixField, "div_field_strength");
 }
 
 // execution ///////////////////////////////////////////////////////////////////
 template <typename FImpl>
 void TG1<FImpl>::execute(void)
 {
+    LOG(Message) << "Computing G1 operators '"
+        << "' using source propagators '" << par().qIn << "' and '" << par().qOut << "'"
+        << std::endl;
+
     auto &Umu = envGet(GaugeField, par().gauge);
 
-    PropagatorField Sin = envGet(PropagatorField, par().Sin);
-    PropagatorField Sout = envGet(PropagatorField, par().Sout);
+    PropagatorField qIn = envGet(PropagatorField, par().qIn);
+    PropagatorField qOut = envGet(PropagatorField, par().qOut);
 
-    envGetTmp(LatticeSpinColourMatrix, bilinear);
+    envGetTmp(PropagatorField, bilinear);
 
-    std::vector<int> latt_size(env().getGrid()->FullDimensions().toVector());
-    std::vector<Real> pin = strToVec<Real>(par().pin);
-    std::vector<Real> pout = strToVec<Real>(par().pout);
+    Coordinate                  latt_size = GridDefaultLatt();
+    std::vector<Real> pIn = strToVec<Real>(par().pIn);
+    std::vector<Real> pOut = strToVec<Real>(par().pOut);
 
-    envGetTmp(LatticeComplex, bilinear_phase);
-    envGetTmp(LatticeComplex, coordinate);
+    envGetTmp(ComplexField, bilinear_phase);
 
     envGetTmp(GaugeField, dSdU);
-    envGetTmp(LatticeColourMatrix, div_field_strength);
+    envGetTmp(ColourMatrixField, div_field_strength);
 
     Result result;
     Gamma g5(Gamma::Algebra::Gamma5);
 
     //// Compute volume
     Real volume = 1.0;
-    for (int mu = 0; mu < Nd; mu++) {
+    for (int mu = 0; mu < Nd; mu++) 
+    {
         volume *= latt_size[mu];
     }
 
-    //// Compute phases for phasing propagators
-    // bilinear_phase = exp(-i (pin - pout) \cdot x)
-    bilinear_phase = Zero();
-    for (int mu = 0; mu < Nd; mu++) {
-        LatticeCoordinate(coordinate, mu);
-        coordinate = (2 * M_PI / latt_size[mu]) * coordinate;
+    LOG(Message) << "Calculating phases" << std::endl;
 
-        bilinear_phase += coordinate * (pin[mu] - pout[mu]);
-    }
-    Complex imag = Complex(0.0, 1.0);
-    bilinear_phase = exp(-imag * bilinear_phase);
+    NPRUtils<FImpl>::phase(bilinear_phase,pIn,pOut);
 
-    IwasakiGaugeAction<FImpl> action(1.0);
+    IwasakiGaugeAction<FImpl> action(1.0); // Include freedom to choose the gauge action?
     action.deriv(Umu, dSdU);
-    // The implementation of IwasakiGaugeAction::deriv has an overall
-    // normalization factor of 1 / (2 Nc) which is not present in Greg's code.
-    // In the interest of matching Greg's code we undo this normalization
-    // factor here
-    dSdU = 2.0 * RealD(Nc) * dSdU;
 
-    for (int mu = 0; mu < Nd; mu++) {
+    for (int mu = 0; mu < Nd; mu++) 
+    {
         Gamma gmu = Gamma::gmu[mu];
 
         // The computation of div_field_strength here is taken from Greg's
         // code; the exact discretization is motivated by the Lattice equations
         // of motion (see Greg's thesis for more detail)
-        LatticeColourMatrix U = peekLorentz(Umu, mu);
+	// Greg McGlynn's thesis: https://doi.org/10.7916/D8T72HD7
+        ColourMatrixField U = peekLorentz(Umu, mu);
         // From the implementation of IwasakiGaugeAction::deriv(Umu, dSdU) we
         // have div_field_strength(x) = [U_\mu(x) L_\mu(x)]_{Traceless Antihermetian}
         div_field_strength = peekLorentz(dSdU, mu);
@@ -161,10 +182,11 @@ void TG1<FImpl>::execute(void)
 
         // This next line is not necessary since div_field_strength should
         // already be traceless and anti-hermetian
+	// TODO: Delete this or assert / enforce it?
         //div_field_strength = Ta(div_field_strength);
 
         // Scalar G1
-        bilinear = g5 * adj(Sout) * g5 * div_field_strength * gmu * Sin;
+        bilinear = g5 * adj(qOut) * g5 * div_field_strength * gmu * qIn;
         bilinear = bilinear_phase * bilinear;
         result.twoq_scalar += (1.0 / volume) * sum(bilinear);
 
@@ -172,7 +194,7 @@ void TG1<FImpl>::execute(void)
         result.fourq_scalar += (1.0 / volume) * sum(bilinear);
 
         // Pseudoscalar G1
-        bilinear = g5 * adj(Sout) * g5 * div_field_strength * gmu * g5 * Sin;
+        bilinear = g5 * adj(qOut) * g5 * div_field_strength * gmu * g5 * qIn;
         bilinear = bilinear_phase * bilinear;
         result.twoq_gamma5 += (1.0 / volume) * sum(bilinear);
 
@@ -180,6 +202,7 @@ void TG1<FImpl>::execute(void)
         result.fourq_gamma5 += (1.0 / volume) * sum(bilinear);
     }
     saveResult(par().output, "G1", result);
+    LOG(Message) << "Complete. Writing results to " << par().output << std::endl;
 }
 
 END_MODULE_NAMESPACE
