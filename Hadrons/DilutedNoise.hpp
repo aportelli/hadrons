@@ -33,6 +33,7 @@
 
 #include <Hadrons/Global.hpp>
 #include <Hadrons/EigenPack.hpp>
+#include <Grid/util/Sha.h>
 
 BEGIN_HADRONS_NAMESPACE
 
@@ -67,7 +68,7 @@ public:
     const std::vector<Vector<Type>> & getNoise(void) const;
     unsigned int dilutionIndex(const unsigned t, const unsigned l, const unsigned s) const;
     std::array<unsigned int, 3> dilutionCoordinates(const unsigned int d) const;
-    std::vector<unsigned int> timeSlices(const unsigned it);
+    std::vector<unsigned int> dilutionPartition(const Index p, const unsigned i);
     const FermionField & makeSource(const unsigned int d, const unsigned int i);
     // access
     virtual void resize(const int nNoise);
@@ -82,19 +83,22 @@ public:
     void dumpDilutionMap(void);
     // generate noise
     void generateNoise(GridSerialRNG &rng);
+    virtual std::vector<std::string> generateHash(void);
+    void save(const std::string filename, const std::string distilname, const unsigned int traj);
 protected:
     virtual void buildMap(void) = 0;
     DilutionMap  &getMap(const bool createIfEmpty = true);
     bool         mapEmpty(void) const;
+    void load(const std::string filestem, const std::string distilname);
 protected:
     DilutionMap                    map_;
-private:
     GridCartesian                  *grid_, *grid3d_;
+    size_t                         noiseSize_;
+private:
     const LapPack                  &pack_;
     FermionField                   src_, tmp3d_, tmp4d_;
     ColourVectorField              evec3d_;
     std::vector<Vector<Type>>      noise_;
-    size_t                         noiseSize_;
 };
 
 template <typename FImpl>
@@ -161,17 +165,16 @@ typename DistillationNoise<FImpl>::DilutionMap & DistillationNoise<FImpl>::getMa
 }
 
 template <typename FImpl>
-std::vector<unsigned int> DistillationNoise<FImpl>::timeSlices(const unsigned int it)
+std::vector<unsigned int> DistillationNoise<FImpl>::dilutionPartition(const Index p, const unsigned ip)
 {
-    std::vector<unsigned int> ts;
+    std::vector<unsigned int> s;
     DilutionMap               &map = getMap();
-
-    for (auto t: map[Index::t][it])
+    for (auto i: map[p][ip])
     {
-        ts.push_back(t);
+        s.push_back(i);
     }
 
-    return ts;
+    return s;
 }
 
 template <typename FImpl>
@@ -192,8 +195,8 @@ DistillationNoise<FImpl>::makeSource(const unsigned int d, const unsigned int i)
         cstr += std::to_string(j) + " ";
     }
     cstr.pop_back();
-    LOG(Message) << "Making distillation source for dilution index " << d
-                 << " ~ (" << cstr << ")" << std::endl;
+    // LOG(Message) << "Making distillation source for dilution index " << d    //do we want to keep these messages?
+                //  << " ~ (" << cstr << ")" << std::endl;
     src_ = Zero();
     for (int it: map[Index::t][c[Index::t]])
     { 
@@ -203,9 +206,9 @@ DistillationNoise<FImpl>::makeSource(const unsigned int d, const unsigned int i)
             {
                 for (int is: map[Index::s][c[Index::s]])
                 {
-                    LOG(Message) << it << " " << ik << " " << is << std::endl;
+                    // LOG(Message) << it << " " << ik << " " << is << std::endl;
                     ExtractSliceLocal(evec3d_, pack_.evec[ik], 0, it - tFirst, tDir);
-                    LOG(Message) << noise(it, ik, is) << std::endl;
+                    // LOG(Message) << noise(it, ik, is) << std::endl;
                     evec3d_ = evec3d_*noise(it, ik, is);
                     tmp3d_  = Zero();
                     pokeSpin(tmp3d_, evec3d_, is);
@@ -293,8 +296,8 @@ void DistillationNoise<FImpl>::dumpDilutionMap(void)
 template <typename FImpl>
 void DistillationNoise<FImpl>::generateNoise(GridSerialRNG &rng)
 {
-    constexpr Type shift(1., 1.);
-    constexpr double invSqrt2 = 0.7071067812;
+    const Type shift(1., 1.);
+    const double invSqrt2 = 0.7071067812;
     Type      eta;
 
     for (auto &n: noise_)
@@ -318,6 +321,107 @@ bool DistillationNoise<FImpl>::mapEmpty(void) const
     return empty;
 }
 
+template <typename FImpl>
+std::vector<std::string> DistillationNoise<FImpl>::generateHash(void)
+{
+    if (mapEmpty())
+    {
+        buildMap();
+    }
+
+    // noise hash by hit
+    std::vector<std::string> shash(noise_.size());
+    for(unsigned int i=0 ; i<noise_.size() ; i++)
+    {
+        auto hn = GridChecksum::sha256( &noise_[i].front() , sizeof(Type)*noiseSize_ );
+        shash[i] = GridChecksum::sha256_string(hn);
+    }
+    return shash;
+}
+
+template <typename FImpl>
+void DistillationNoise<FImpl>::save(const std::string filename, const std::string distilname, const unsigned int traj)
+{
+#ifdef HAVE_HDF5
+    if(grid_->IsBoss())
+    {
+        std::string filestem = filename + "." + std::to_string(traj) + ".h5";
+        Hdf5Writer writer(filestem);
+        push(writer, distilname);
+        auto &group = writer.getGroup();
+
+        ////metadata write
+        //hash hits
+        std::vector<std::string> shash = generateHash();
+        hsize_t         hcount=1, hstride=1, hblock=1, hash_dim = shash.size(), hash_memdim = 1;
+        H5NS::DataSpace hash_dataspace(1, &hash_dim), hash_memspace(1, &hash_memdim);
+        //maximum string size assuming each unsigned int is hexed to a maximum of 8 chars (ffffffff); better way?
+        H5NS::DataType  hash_datatype( H5T_STRING, 8*SHA256_DIGEST_LENGTH );                  
+        H5NS::DataSet   hash_dataset = group.createDataSet("NoiseHitHashes", hash_datatype, hash_dataspace);
+        for(hsize_t hoffset=0 ; hoffset<shash.size() ; hoffset++)
+        {
+            hash_dataspace.selectHyperslab(H5S_SELECT_SET, &hcount, &hoffset, &hstride, &hblock);
+            hash_dataset.write( shash[hoffset].c_str(), hash_datatype, hash_memspace, hash_dataspace);
+        }
+
+        //dilution sizes t,l,s
+        std::vector<int> dil_sizes = {dilutionSize(Index::t),dilutionSize(Index::l),dilutionSize(Index::s)};
+        hsize_t dilsize_dim = dil_sizes.size();
+        H5NS::DataSpace dil_dataspace(1, &dilsize_dim);
+        H5NS::Attribute attr_dil = group.createAttribute("DilutionSizes",  Hdf5Type<int>::type(), dil_dataspace);
+        attr_dil.write(Hdf5Type<int>::type(), dil_sizes.data());
+
+        //noise hits
+        std::vector<hsize_t>    noffset={0,0}, ncount={1,static_cast<hsize_t>(noiseSize_)}, nstride={1,1}, nblock={1,1};
+        std::vector<hsize_t>    noise_dim = {static_cast<hsize_t>(noise_.size()), static_cast<hsize_t>(noiseSize_)},
+                                    noise_memdim = {1, static_cast<hsize_t>(noiseSize_)};
+        H5NS::DataSpace         noise_dataspace(noise_dim.size(), noise_dim.data()),
+                                    noise_memspace(noise_memdim.size(), noise_memdim.data());
+        H5NS::DataSet           noise_dataset = group.createDataSet("NoiseHits", Hdf5Type<Type>::type(), noise_dataspace);
+        for(unsigned int i=0 ; i<noise_.size() ; i++)
+        {
+            noffset.front() = static_cast<hsize_t>(i);
+            noise_dataspace.selectHyperslab(H5S_SELECT_SET, ncount.data(), noffset.data(), nstride.data(), nblock.data());
+            noise_dataset.write(&noise_[i].front() , Hdf5Type<Type>::type(), noise_memspace, noise_dataspace);
+        }
+
+    }
+#else
+    HADRONS_ERROR(Implementation, "distillation I/O needs HDF5 library");
+#endif
+}
+
+template <typename FImpl>
+void DistillationNoise<FImpl>::load(const std::string filestem, const std::string distilname)
+{
+#ifdef HAVE_HDF5
+    if(this->grid_->IsBoss())
+    {
+        Hdf5Reader reader(filestem);
+        push(reader, distilname);
+        auto &group = reader.getGroup();
+
+        //noise
+        std::vector<hsize_t>    memdim = {1, static_cast<hsize_t>(noiseSize_)},
+                                    offset={0,0}, count={1,static_cast<hsize_t>(noiseSize_)}, stride={1,1}, block={1,1};
+        H5NS::DataSet dataset =  group.openDataSet("NoiseHits");
+        H5NS::DataSpace dataspace = dataset.getSpace(),
+                            memspace(memdim.size(), memdim.data());
+        std::vector<hsize_t> fdim(2); 
+        dataspace.getSimpleExtentDims(fdim.data());
+        resize(static_cast<int>(fdim[0]));                            //resize noise_ to in file dimension
+        for(unsigned int i=0 ; i<noise_.size() ; i++)
+        {
+            offset.front() = static_cast<hsize_t>(i);
+            dataspace.selectHyperslab(H5S_SELECT_SET, count.data(), offset.data(), stride.data(), block.data());
+            dataset.read(&noise_[i].front(), Hdf5Type<Type>::type(), memspace, dataspace);
+        }
+    }
+#else
+    HADRONS_ERROR(Implementation, "distillation I/O needs HDF5 library");
+#endif
+}
+
 /******************************************************************************
  *                 Container for interlaced distillation noise                *
  ******************************************************************************/
@@ -331,14 +435,16 @@ public:
     InterlacedDistillationNoise(GridCartesian *g, GridCartesian *g3d,
                                 const LapPack &pack, const unsigned int ti, 
                                 const unsigned int li, const unsigned int si, 
-                                const unsigned nNoise = 1);
+                                const unsigned nNoise);
     unsigned int getInterlacing(const Index ind) const;
-    virtual int  dilutionSize(const Index ind) const;
+    virtual int dilutionSize(const Index ind) const;
+    void load(const std::string filename, const std::string distilname, const unsigned int traj);
 protected:
     virtual void buildMap(void);
 private:
     std::array<unsigned int, 3> interlacing_;
 };
+
 template <typename FImpl>
 InterlacedDistillationNoise<FImpl>::InterlacedDistillationNoise(GridCartesian *g, 
                                                                 GridCartesian *g3d, 
@@ -398,6 +504,95 @@ void InterlacedDistillationNoise<FImpl>::buildMap(void)
         }
         map[Index::s].push_back(set);
     }
+}
+
+template <typename FImpl>
+void InterlacedDistillationNoise<FImpl>::load(const std::string filename, const std::string distilname, const unsigned int traj)
+{
+    std::string filestem = filename + "." + std::to_string(traj) + ".h5";
+    DistillationNoise<FImpl>::load(filestem,distilname);
+}
+
+/******************************************************************************
+ *                 Container for exact distillation                           *
+ ******************************************************************************/
+template <typename FImpl>
+class ExactDistillationPolicy: public DistillationNoise<FImpl>
+{
+public:
+    typedef typename DistillationNoise<FImpl>::Index Index;
+    typedef typename DistillationNoise<FImpl>::LapPack LapPack;
+    typedef typename DistillationNoise<FImpl>::Type Type;
+public:
+    ExactDistillationPolicy(GridCartesian *g, GridCartesian *g3d,
+                                const LapPack &pack);
+    virtual int dilutionSize(const Index ind) const;
+    virtual std::vector<std::string> generateHash(void);
+protected:
+    virtual void buildMap(void);
+};
+
+template <typename FImpl>
+ExactDistillationPolicy<FImpl>::ExactDistillationPolicy(GridCartesian *g, 
+                                                                GridCartesian *g3d, 
+                                                                const LapPack &pack)
+: DistillationNoise<FImpl>(g, g3d, pack)
+{
+    const Type shift(1., 0.);
+    for (auto &n: this->getNoise())
+    for (unsigned int i = 0; i < n.size(); ++i)
+    {
+        n[i] = shift;
+    }
+}
+
+template <typename FImpl>
+int ExactDistillationPolicy<FImpl>::dilutionSize(const Index ind) const
+{
+    switch(ind) {
+        case Index::t :
+            return this->getNt();
+        case Index::l :
+            return this->getNl();
+        case Index::s :
+            return this->getNs();
+    }
+}
+
+template <typename FImpl>
+void ExactDistillationPolicy<FImpl>::buildMap(void)
+{
+    auto                   &map = this->getMap(false);
+
+    map[Index::t].clear();
+    for (unsigned int it = 0; it < dilutionSize(Index::t); ++it)
+    {
+        map[Index::t].push_back({it});
+    }
+    map[Index::l].clear();
+    for (unsigned int il = 0; il < dilutionSize(Index::l); ++il)
+    {
+        map[Index::l].push_back({il});
+    }
+    map[Index::s].clear();
+    for (unsigned int is = 0; is < dilutionSize(Index::s); ++is)
+    {
+        map[Index::s].push_back({is});
+    }
+}
+
+template <typename FImpl>
+std::vector<std::string> ExactDistillationPolicy<FImpl>::generateHash(void)
+{
+    if (this->mapEmpty())
+    {
+        this->buildMap();
+    }
+    
+    // exact distillation convention
+    std::vector<std::string> shash(1);
+    shash.front() = "0";    
+    return shash;
 }
 
 /******************************************************************************

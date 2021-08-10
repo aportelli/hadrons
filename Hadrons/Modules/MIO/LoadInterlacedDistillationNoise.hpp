@@ -1,5 +1,5 @@
-#ifndef Hadrons_MNoise_InterlacedDistillation_hpp_
-#define Hadrons_MNoise_InterlacedDistillation_hpp_
+#ifndef Hadrons_MIO_LoadInterlacedDistillationNoise_hpp_
+#define Hadrons_MIO_LoadInterlacedDistillationNoise_hpp_
 
 #include <Hadrons/Global.hpp>
 #include <Hadrons/Module.hpp>
@@ -9,32 +9,33 @@
 BEGIN_HADRONS_NAMESPACE
 
 /******************************************************************************
- *                   Interlaced distillation noise module                     *
+ *                         LoadInterlacedDistillationNoise                    *
  ******************************************************************************/
-BEGIN_MODULE_NAMESPACE(MNoise)
+BEGIN_MODULE_NAMESPACE(MIO)
 
-class InterlacedDistillationPar: Serializable
+class LoadInterlacedDistillationNoisePar: Serializable
 {
 public:
-    GRID_SERIALIZABLE_CLASS_MEMBERS(InterlacedDistillationPar,
-                                    unsigned int,   ti,
-                                    unsigned int,   li,
-                                    unsigned int,   si,
-                                    unsigned int,   nNoise,
-                                    std::string,    lapEigenPack,
-                                    std::string,    fileName);
+    GRID_SERIALIZABLE_CLASS_MEMBERS(LoadInterlacedDistillationNoisePar,
+                                    unsigned int, ti,
+                                    unsigned int, li,
+                                    unsigned int, si,
+                                    unsigned int, nNoise,
+                                    std::string, lapEigenPack,
+                                    std::string, fileName,);
 };
 
 template <typename FImpl>
-class TInterlacedDistillation: public Module<InterlacedDistillationPar>
+class TLoadInterlacedDistillationNoise: public Module<LoadInterlacedDistillationNoisePar>
 {
 public:
     FERM_TYPE_ALIASES(FImpl,);
+    typedef typename DistillationNoise<FImpl>::Index Index;
 public:
     // constructor
-    TInterlacedDistillation(const std::string name);
+    TLoadInterlacedDistillationNoise(const std::string name);
     // destructor
-    virtual ~TInterlacedDistillation(void) {};
+    virtual ~TLoadInterlacedDistillationNoise(void) {};
     // dependency relation
     virtual std::vector<std::string> getInput(void);
     virtual std::vector<std::string> getReference(void);
@@ -45,29 +46,28 @@ public:
     virtual void execute(void);
 };
 
-MODULE_REGISTER_TMP(InterlacedDistillation, TInterlacedDistillation<FIMPL>, MNoise);
-MODULE_REGISTER_TMP(ZInterlacedDistillation, TInterlacedDistillation<ZFIMPL>, MNoise);
+MODULE_REGISTER_TMP(LoadInterlacedDistillationNoise, TLoadInterlacedDistillationNoise<FIMPL>, MIO);
 
 /******************************************************************************
- *                 TInterlacedDistillation implementation                    *
+ *                 TLoadInterlacedDistillationNoise implementation                             *
  ******************************************************************************/
 // constructor /////////////////////////////////////////////////////////////////
 template <typename FImpl>
-TInterlacedDistillation<FImpl>::TInterlacedDistillation(const std::string name)
-: Module<InterlacedDistillationPar>(name)
+TLoadInterlacedDistillationNoise<FImpl>::TLoadInterlacedDistillationNoise(const std::string name)
+: Module<LoadInterlacedDistillationNoisePar>(name)
 {}
 
 // dependencies/products ///////////////////////////////////////////////////////
 template <typename FImpl>
-std::vector<std::string> TInterlacedDistillation<FImpl>::getInput(void)
+std::vector<std::string> TLoadInterlacedDistillationNoise<FImpl>::getInput(void)
 {
-    std::vector<std::string> in = {};
+    std::vector<std::string> in = {par().lapEigenPack};
     
     return in;
 }
 
 template <typename FImpl>
-std::vector<std::string> TInterlacedDistillation<FImpl>::getReference(void)
+std::vector<std::string> TLoadInterlacedDistillationNoise<FImpl>::getReference(void)
 {
     std::vector<std::string> ref = {par().lapEigenPack};
 
@@ -75,7 +75,7 @@ std::vector<std::string> TInterlacedDistillation<FImpl>::getReference(void)
 }
 
 template <typename FImpl>
-std::vector<std::string> TInterlacedDistillation<FImpl>::getOutput(void)
+std::vector<std::string> TLoadInterlacedDistillationNoise<FImpl>::getOutput(void)
 {
     std::vector<std::string> out = {getName()};
     
@@ -84,10 +84,10 @@ std::vector<std::string> TInterlacedDistillation<FImpl>::getOutput(void)
 
 // setup ///////////////////////////////////////////////////////////////////////
 template <typename FImpl>
-void TInterlacedDistillation<FImpl>::setup(void)
+void TLoadInterlacedDistillationNoise<FImpl>::setup(void)
 {
     auto          &epack = envGet(typename DistillationNoise<FImpl>::LapPack, 
-                                  par().lapEigenPack);
+                                    par().lapEigenPack);
     GridCartesian *g     = envGetGrid(FermionField);
     GridCartesian *g3d   = envGetSliceGrid(FermionField, g->Nd() - 1);
 
@@ -98,27 +98,21 @@ void TInterlacedDistillation<FImpl>::setup(void)
 
 // execution ///////////////////////////////////////////////////////////////////
 template <typename FImpl>
-void TInterlacedDistillation<FImpl>::execute(void)
+void TLoadInterlacedDistillationNoise<FImpl>::execute(void)
 {
-    LOG(Message) << "Generating interlaced distillation noise with (ti, li, si) = (" 
+    LOG(Message) << "Loading interlaced distillation noise with (ti, li, si) = (" 
                  << par().ti << ", " << par().li << ", " << par().si << ")"
                  << std::endl;
 
     auto &noise = envGetDerived(DistillationNoise<FImpl>,
                                 InterlacedDistillationNoise<FImpl>, getName());
-
-    noise.generateNoise(rngSerial());
+    noise.load(par().fileName, "InterlacedDistillation", vm().getTrajectory());
     noise.dumpDilutionMap();
     auto hash = noise.generateHash();
-    LOG(Message) << "Noise hashes : " << std::endl;
+    LOG(Message) << "Noise hit hashes : " << std::endl;
     for(auto& h: hash)
     {
         LOG(Message) << h << std::endl;
-    }
-
-    if(!par().fileName.empty())
-    {
-        noise.save(par().fileName, "InterlacedDistillation", vm().getTrajectory());
     }
 }
 
@@ -126,4 +120,4 @@ END_MODULE_NAMESPACE
 
 END_HADRONS_NAMESPACE
 
-#endif // Hadrons_MNoise_InterlacedDistillation_hpp_
+#endif // Hadrons_MIO_LoadInterlacedDistillationNoise_hpp_
