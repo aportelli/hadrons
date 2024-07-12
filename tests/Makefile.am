@@ -11,6 +11,7 @@ EXTRA_PROGRAMS = \
   Test_exact_distil         \
   Test_field_io             \
   Test_free_prop            \
+  Test_gamma3pt             \
   Test_hadrons_meson_3pt    \
   Test_hadrons_spectrum     \
   Test_highfreq_stat        \
@@ -49,6 +50,9 @@ Test_field_io_LDADD=-lHadrons -lGrid
 
 Test_free_prop_SOURCES=Test_free_prop.cpp
 Test_free_prop_LDADD=-lHadrons -lGrid
+
+Test_gamma3pt_SOURCES=Test_gamma3pt.cpp
+Test_gamma3pt_LDADD=-lHadrons -lGrid
 
 Test_hadrons_meson_3pt_SOURCES=Test_hadrons_meson_3pt.cpp
 Test_hadrons_meson_3pt_LDADD=-lHadrons -lGrid
