@@ -189,6 +189,11 @@ template <typename FImpl1, typename FImpl2, typename FImpl3>
 std::vector<std::string> TGamma3pt<FImpl1, FImpl2, FImpl3>::getOutput(void)
 {
     std::vector<std::string> out = {getName()};
+
+    if (par().save4d)
+    {
+        out.push_back(getName() + "_4d");
+    }
     
     return out;
 }
