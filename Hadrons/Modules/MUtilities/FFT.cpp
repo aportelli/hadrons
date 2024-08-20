@@ -4,4 +4,5 @@ using namespace Grid;
 using namespace Hadrons;
 using namespace MUtilities;
 
+template class HADRONS_NAMESPACE::MUtilities::TFFT<SIMPL::ComplexField>;
 template class HADRONS_NAMESPACE::MUtilities::TFFT<TEmFieldGenerator<vComplex>::GaugeField>;
