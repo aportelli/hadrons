@@ -1,10 +1,9 @@
 /*
- * LoadField.cpp, part of Hadrons (https://github.com/aportelli/Hadrons)
+ * CovariantLaplacian.cpp, part of Hadrons (https://github.com/aportelli/Hadrons)
  *
  * Copyright (C) 2015 - 2023
  *
  * Author: Antonin Portelli <antonin.portelli@me.com>
- * Author: Michael Marshall <43034299+mmphys@users.noreply.github.com>
  *
  * Hadrons is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -24,17 +23,10 @@
  */
 
 /*  END LEGAL */
-#include <Hadrons/Modules/MIO/LoadField.hpp>
+#include <Hadrons/Modules/MAction/CovariantLaplacian.hpp>
 
 using namespace Grid;
 using namespace Hadrons;
-using namespace MIO;
+using namespace MAction;
 
-template class HADRONS_NAMESPACE::MIO::TLoadField<FIMPL::PropagatorField>;
-#ifdef GRID_DEFAULT_PRECISION_DOUBLE
-template class HADRONS_NAMESPACE::MIO::TLoadField<FIMPL::PropagatorField, FIMPLF::PropagatorField>;
-#endif
-template class HADRONS_NAMESPACE::MIO::TLoadField<GIMPL::GaugeLinkField>;
-template class HADRONS_NAMESPACE::MIO::TLoadField<TEmFieldGenerator<vComplex>::GaugeField>;
-template class HADRONS_NAMESPACE::MIO::TLoadField<LatticeComplex>;
-
+template class HADRONS_NAMESPACE::MAction::TCovariantLaplacian<FIMPL::FermionField, GIMPL>;

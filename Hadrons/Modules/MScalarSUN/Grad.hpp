@@ -77,6 +77,7 @@ public:
     virtual void execute(void);
 };
 
+MODULE_REGISTER_TMP(Grad, TGrad<SIMPL>, MScalarSUN);
 MODULE_REGISTER_TMP(GradSU2, TGrad<ScalarNxNAdjImplR<2>>, MScalarSUN);
 MODULE_REGISTER_TMP(GradSU3, TGrad<ScalarNxNAdjImplR<3>>, MScalarSUN);
 MODULE_REGISTER_TMP(GradSU4, TGrad<ScalarNxNAdjImplR<4>>, MScalarSUN);
@@ -140,20 +141,14 @@ void TGrad<SImpl>::execute(void)
     GradResult         result;
     auto               &op = envGet(ComplexField, par().op);
 
-    if (!par().output.empty())
-    {
-        result.type = par().type;
-        result.value.resize(nd);
-    }
+    result.type = par().type;
+    result.value.resize(nd);
     for (unsigned int mu = 0; mu < nd; ++mu)
     {
         auto &der = envGet(ComplexField, varName(getName(), mu));
 
         dmu(der, op, mu, par().type);
-        if (!par().output.empty())
-        {
-            result.value[mu] = TensorRemove(sum(der));
-        }
+        result.value[mu] = TensorRemove(sum(der));
     }
 
     saveResult(par().output, "grad", result);

@@ -568,7 +568,8 @@ void VirtualMachine::makeModuleGraph(void)
                 HADRONS_ERROR_REF(ObjectDefinition, "dependency '" 
                              + env().getObjectName(in) + "' (address " 
                              + std::to_string(in)
-                             + ") is not produced by any module", in);
+                             + ", of module '" + getModuleName(m) 
+                             + "') is not produced by any module", in);
             }
             else
             {
@@ -990,6 +991,8 @@ void VirtualMachine::executeProgram(const Program &p)
     // program execution
     LOG(Debug) << "Executing program..." << std::endl;
     totalTime_ = GridTime::zero();
+    moduleTimeProfile_.clear();
+    moduleTypeTimeProfile_.clear();
     for (unsigned int i = 0; i < p.size(); ++i)
     {
         // execute module
@@ -1019,7 +1022,16 @@ void VirtualMachine::executeProgram(const Program &p)
             LOG(Message) << "* CUSTOM TIMERS" << std::endl;
             printTimeProfile(ctiming, total);
         }
-        timeProfile_[module_[p[i]].name] = total;
+        moduleTimeProfile_[module_[p[i]].name] = total;
+        std::string moduleType = getModuleType(p[i]);
+        if (moduleTypeTimeProfile_.find(moduleType) == moduleTypeTimeProfile_.end())
+        {
+            moduleTypeTimeProfile_[getModuleType(p[i])] = total;
+        }
+        else
+        {
+            moduleTypeTimeProfile_.at(getModuleType(p[i])) += total;
+        }
         totalTime_ += total;
         // print used memory after execution
         LOG(Message) << SMALL_SEP << " Memory management" << std::endl;
@@ -1053,10 +1065,12 @@ void VirtualMachine::executeProgram(const Program &p)
         }
     }
     // print total time profile
-     LOG(Message) << SEP << " Measurement time profile" << SEP << std::endl;
-     LOG(Message) << "Total measurement time: " << totalTime_ << " us" << std::endl;
-     LOG(Message) << SMALL_SEP << " Module breakdown" << std::endl;
-     printTimeProfile(timeProfile_, totalTime_);
+    LOG(Message) << SEP << " Measurement time profile" << SEP << std::endl;
+    LOG(Message) << "Total measurement time: " << timeString(totalTime_) << std::endl;
+    LOG(Message) << SMALL_SEP << " Module breakdown" << std::endl;
+    printTimeProfile(moduleTimeProfile_, totalTime_);
+    LOG(Message) << SMALL_SEP << " Module type breakdown" << std::endl;
+    printTimeProfile(moduleTypeTimeProfile_, totalTime_);
 }
 
 void VirtualMachine::executeProgram(const std::vector<std::string> &p)

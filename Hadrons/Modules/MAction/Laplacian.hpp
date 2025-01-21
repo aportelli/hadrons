@@ -33,7 +33,7 @@
 BEGIN_HADRONS_NAMESPACE
 
 /******************************************************************************
- *                      Covariant Laplacian operator                          *
+ *                           Laplacian operator                               *
  ******************************************************************************/
 BEGIN_MODULE_NAMESPACE(MAction)
 
@@ -41,79 +41,94 @@ class LaplacianPar: Serializable
 {
 public:
     GRID_SERIALIZABLE_CLASS_MEMBERS(LaplacianPar,
-                                    std::string, gauge,
-                                    double,      m2);
+                                    double, m2);
 };
 
-template <typename Field, typename GImpl>
-class Laplacian: public LinearOperatorBase<Field>
+template<class Field> 
+class Laplacian : public SparseMatrixBase<Field>
 {
 public:
-    GAUGE_TYPE_ALIASES(GImpl,);
+    typedef typename Field::vector_object vobj;
+    typedef CartesianStencil<vobj, vobj, SimpleStencilParams> Stencil;
 public:
-    Laplacian(const GaugeField &U, const double m2)
-    : grid_(U.Grid()), tmp_(U.Grid()), m2_(m2)
+    Laplacian(const double m2, GridBase *g)
+    : m2_(m2), grid_(g)
     {
-        for (unsigned int mu = 0; mu < grid_->Nd(); ++mu)
-        {
-            U_.push_back(PeekIndex<LorentzIndex>(U, mu)); 
-        }
-    }
-
-    virtual void OpDiag(const Field &in, Field &out)
-    {
-        HADRONS_ERROR(Implementation, "Laplacian method not implemented");
-    }
-
-    virtual void OpDir(const Field &in, Field &out, int dir, int disp)
-    {
-        HADRONS_ERROR(Implementation, "Laplacian method not implemented");
-    }
-
-    virtual void OpDirAll(const Field &in, std::vector<Field> &out)
-    {
-        HADRONS_ERROR(Implementation, "Laplacian method not implemented");
-    }
-
-    virtual void Op(const Field &in, Field &out)
-    {
-        unsigned int nd = grid_->Nd();
-
-        out = (m2_ + 2.*nd)*in;
+        auto nd = grid_->Nd();
         for (unsigned int mu = 0; mu < nd; ++mu)
         {
-            out  -= U_[mu]*Cshift(in, mu, 1);
-            tmp_  = adj(U_[mu])*in;
-            out  -= Cshift(tmp_, mu, -1);
+            dir_.push_back(mu);
+            disp_.push_back(1);
         }
-    }
+        for (unsigned int mu = 0; mu < nd; ++mu)
+        {
+            dir_.push_back(mu);
+            disp_.push_back(-1);
+        }
+        st_.reset(new Stencil(grid_, 2*nd, Even, dir_, disp_, SimpleStencilParams()));
+    };
 
-    virtual void AdjOp(const Field &in, Field &out)
-    {
-        Op(in, out);
-    }
+    virtual GridBase *Grid(void) { return grid_; };
 
-    virtual void HermOpAndNorm(const Field &in, Field &out, RealD &n1, RealD &n2)
+    virtual void M(const Field &_in, Field &_out)
     {
-        HADRONS_ERROR(Implementation, "Laplacian method not implemented");
-    }
+        st_->HaloExchange(_in, comp_);
+        
+        autoView(st, (*st_), AcceleratorRead);
+        autoView(in, _in, AcceleratorRead);
+        autoView(out, _out, AcceleratorWrite);
 
-    virtual void HermOp(const Field &in, Field &out)
-    {
-        Op(in, out);
-    }
+        typedef decltype(coalescedRead(in[0])) calcObj;
+
+        const int nSimd = vobj::Nsimd();
+        const uint64_t n = grid_->oSites();
+        auto nd = grid_->Nd();
+        double m2 = m2_; // needs to be local to be accessible from accelerator
+        auto buf = st.CommBuf();
+
+        acceleratorFenceComputeStream();
+        accelerator_for(ss, n, nSimd,
+        {
+            StencilEntry *e;
+            const int lane = acceleratorSIMTlane(nSimd);
+            calcObj chi;
+            calcObj res;
+            int ptype;
+            res = coalescedRead(in[ss])*(2.*nd + m2);
+            for (unsigned int mu = 0; mu < 2 * nd; ++mu)
+            {
+                e = st.GetEntry(ptype, mu, ss);
+                if (e->_is_local)
+                {
+                    int perm = e->_permute;
+                    chi = coalescedReadPermute(in[e->_offset], ptype, perm, lane);
+                }
+                else
+                {
+                    chi = coalescedRead(buf[e->_offset], lane);
+                }
+                acceleratorSynchronise();
+                res -= chi;
+            }
+            coalescedWrite(out[ss], res, lane);
+        });
+    };
+
+    virtual void Mdag(const Field &in, Field &out) { M(in, out); };
+    virtual void Mdiag(const Field &in, Field &out) { assert(0); };
+    virtual void Mdir(const Field &in, Field &out, int dir, int disp) { assert(0); }; 
+    virtual void MdirAll(const Field &in, std::vector<Field> &out) { assert(0); };
 private:
-    std::vector<GaugeLinkField> U_;
-    Field                       tmp_;
-    GridBase                    *grid_;
-    double                      m2_;
+    double m2_;
+    GridBase *grid_;
+    std::unique_ptr<Stencil> st_;
+    SimpleCompressor<vobj> comp_;
+    std::vector<int> dir_, disp_;
 };
 
-template <typename Field, typename GImpl>
+template <typename Field>
 class TLaplacian: public Module<LaplacianPar>
 {
-public:
-    GAUGE_TYPE_ALIASES(GImpl,);
 public:
     // constructor
     TLaplacian(const std::string name);
@@ -128,29 +143,28 @@ public:
     virtual void execute(void);
 };
 
-MODULE_REGISTER_TMP(FermionLaplacian, 
-                    ARG(TLaplacian<FIMPL::FermionField, GIMPL>), MAction);
+MODULE_REGISTER_TMP(FermionLaplacian, TLaplacian<FIMPL::FermionField>, MAction);
 
 /******************************************************************************
  *                      TLaplacian implementation                             *
  ******************************************************************************/
 // constructor /////////////////////////////////////////////////////////////////
-template <typename Field, typename GImpl>
-TLaplacian<Field, GImpl>::TLaplacian(const std::string name)
+template <typename Field>
+TLaplacian<Field>::TLaplacian(const std::string name)
 : Module<LaplacianPar>(name)
 {}
 
 // dependencies/products ///////////////////////////////////////////////////////
-template <typename Field, typename GImpl>
-std::vector<std::string> TLaplacian<Field, GImpl>::getInput(void)
+template <typename Field>
+std::vector<std::string> TLaplacian<Field>::getInput(void)
 {
-    std::vector<std::string> in = {par().gauge};
+    std::vector<std::string> in;
     
     return in;
 }
 
-template <typename Field, typename GImpl>
-std::vector<std::string> TLaplacian<Field, GImpl>::getOutput(void)
+template <typename Field>
+std::vector<std::string> TLaplacian<Field>::getOutput(void)
 {
     std::vector<std::string> out = {getName()};
     
@@ -158,19 +172,17 @@ std::vector<std::string> TLaplacian<Field, GImpl>::getOutput(void)
 }
 
 // setup ///////////////////////////////////////////////////////////////////////
-template <typename Field, typename GImpl>
-void TLaplacian<Field, GImpl>::setup(void)
+template <typename Field>
+void TLaplacian<Field>::setup(void)
 {
-    LOG(Message) << "Setting up covariant Laplacian operator with gauge field '"
-                 << par().gauge << "' and m^2= " << par().m2 << std::endl;
-    auto &U = envGet(GaugeField, par().gauge);
-    envCreateDerived(LinearOperatorBase<Field>, ARG(Laplacian<Field, GImpl>), 
-                     getName(), 1, U, par().m2);
+    LOG(Message) << "Setting up Laplacian operator with m^2= " << par().m2 << std::endl;
+    envCreateDerived(SparseMatrixBase<Field>, ARG(Laplacian<Field>), 
+                     getName(), 1, par().m2, getGrid<Field>());
 }
 
 // execution ///////////////////////////////////////////////////////////////////
-template <typename Field, typename GImpl>
-void TLaplacian<Field, GImpl>::execute(void)
+template <typename Field>
+void TLaplacian<Field>::execute(void)
 {}
 
 END_MODULE_NAMESPACE
