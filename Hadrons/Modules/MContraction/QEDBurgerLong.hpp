@@ -33,7 +33,7 @@ class QEDBurgerLongPar: Serializable
 public:
     GRID_SERIALIZABLE_CLASS_MEMBERS(QEDBurgerLongPar,
                                     std::string, q,
-                                    std::string, emField,
+                                    std::string, photonProp,
                                     int,         radius,
                                     std::string, output);
 };
@@ -45,7 +45,7 @@ public:
     FERM_TYPE_ALIASES(FImpl,);
     
     typedef TEmFieldGenerator<VType> EmGen;
-    typedef typename EmGen::GaugeField EmField;
+    typedef typename EmGen::ScalarField PhotonProp;
 
     // constructor
     TQEDBurgerLong(const std::string name);
@@ -76,7 +76,7 @@ TQEDBurgerLong<FImpl, VType>::TQEDBurgerLong(const std::string name)
 template <typename FImpl, typename VType>
 std::vector<std::string> TQEDBurgerLong<FImpl, VType>::getInput(void)
 {
-    std::vector<std::string> in = {par().q, par().emField};
+    std::vector<std::string> in = {par().q, par().photonProp};
     
     return in;
 }
@@ -105,15 +105,12 @@ template <typename FImpl, typename VType>
 void TQEDBurgerLong<FImpl, VType>::setup(void)
 {
     envTmp(FFT,            "fft",            1, env().getGrid());
-    envTmp(EmField,        "Gx",             1, env().getGrid());
-    envTmp(EmField,        "em_buffer",      1, env().getGrid());
+    envTmp(PhotonProp,     "Gx",             1, env().getGrid());
+    envTmp(PhotonProp,     "em_buffer",      1, env().getGrid());
     envTmp(LatticeComplex, "burger_lattice", 1, env().getGrid());
     envCreate(HadronsSerializable, getName(), 1, 0);
     if (par().radius >= 0)
     {
-        envTmp(LatticeInteger, "tmp_intbuffer",    1, env().getGrid());
-        envTmp(LatticeInteger, "lsize_buffer",     1, env().getGrid());
-        envTmp(LatticeInteger, "lhalfsize_buffer", 1, env().getGrid());
         envTmp(LatticeInteger, "coord_buffer",     1, env().getGrid());
         envTmp(LatticeInteger, "radial_dist_sq",   1, env().getGrid());
         envTmp(LatticeComplex, "tmp_cbuffer",      1, env().getGrid());
@@ -126,9 +123,9 @@ template <typename FImpl, typename VType>
 void TQEDBurgerLong<FImpl, VType>::execute(void)
 {
     // Get env variables
-    std::cout << "Using emField '" << par().emField << "'" << std::endl;
-    const PropagatorField& q        = envGet(PropagatorField, par().q);
-    const EmField&         em_field = envGet(EmField, par().emField);
+    std::cout << "Using photon propagator '" << par().photonProp << "'" << std::endl;
+    const PropagatorField& q           = envGet(PropagatorField, par().q);
+    const PhotonProp&      photon_prop = envGet(PhotonProp, par().photonProp);
 
     Gamma Gmu[] = 
     {
@@ -138,16 +135,9 @@ void TQEDBurgerLong<FImpl, VType>::execute(void)
         Gamma(Gamma::Algebra::GammaT),
     };
 
-    // Construct photon prop from weights
-    envGetTmp(EmField, Gx);
-    envGetTmp(EmField, em_buffer);
+    envGetTmp(PhotonProp, Gx);
     envGetTmp(FFT,     fft);
-    fft.FFT_all_dim(em_buffer, em_field, FFT::forward);
-    pokeLorentz(em_buffer, peekLorentz(em_buffer,0)*peekLorentz(em_buffer,0), 0);
-    pokeLorentz(em_buffer, peekLorentz(em_buffer,1)*peekLorentz(em_buffer,1), 1);
-    pokeLorentz(em_buffer, peekLorentz(em_buffer,2)*peekLorentz(em_buffer,2), 2);
-    pokeLorentz(em_buffer, peekLorentz(em_buffer,3)*peekLorentz(em_buffer,3), 3);
-    fft.FFT_all_dim(Gx, em_buffer, FFT::backward);
+    fft.FFT_all_dim(Gx, photon_prop, FFT::backward);
     
     // Calculate the Burger in Feynman gauge
     // The Feynman gauge photon propagator is delta^{mu,nu}/k^2, so we only need
@@ -156,7 +146,7 @@ void TQEDBurgerLong<FImpl, VType>::execute(void)
     envGetTmp(LatticeComplex, burger_lattice);
     burger_lattice = Zero();
     for (int mu=0; mu<Nd; ++mu)
-        burger_lattice += peekLorentz(Gx,mu)*Burger(q, Gmu[mu], Gmu[mu], Gamma5);
+        burger_lattice += Gx*Burger(q, Gmu[mu], Gmu[mu], Gamma5);
     
     // If a non-negative radius was specified, cut out any sites within that radius
     // around the origin from the final result.
@@ -170,20 +160,14 @@ void TQEDBurgerLong<FImpl, VType>::execute(void)
         // corner of the hypercube, this will ensure we correctly measure the 
         // radial distace for the purposes of splitting the field.
         envGetTmp(LatticeInteger, coord_buffer);
-        envGetTmp(LatticeInteger, tmp_intbuffer);
-        envGetTmp(LatticeInteger, lsize_buffer);
-        envGetTmp(LatticeInteger, lhalfsize_buffer);
         envGetTmp(LatticeInteger, radial_dist_sq);
         radial_dist_sq = Zero();
         Coordinate latt_size   = env().getDim();
         for (int mu=0;mu<Nd;mu++)
         {
             LatticeCoordinate(coord_buffer, mu);
-            lhalfsize_buffer = latt_size[mu]/2;
-            lsize_buffer     = latt_size[mu];
-            tmp_intbuffer    = where(coord_buffer<=lhalfsize_buffer,coord_buffer,lsize_buffer-coord_buffer);
-            tmp_intbuffer    *= tmp_intbuffer;
-            radial_dist_sq   += tmp_intbuffer;
+            coord_buffer = where(coord_buffer < Integer(latt_size[mu]/2), coord_buffer, coord_buffer - Integer(latt_size[mu]));
+            radial_dist_sq = radial_dist_sq + coord_buffer*coord_buffer;
         }
 
         // Perform the lattice sum, ignoring all sites within the specified radius.

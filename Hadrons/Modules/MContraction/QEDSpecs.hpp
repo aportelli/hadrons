@@ -34,7 +34,7 @@ public:
     GRID_SERIALIZABLE_CLASS_MEMBERS(QEDSpecsPar,
                                     std::string, q1,
                                     std::string, q2,
-                                    std::string, emField,
+                                    std::string, photonProp,
                                     std::string, output)
 };
 
@@ -46,7 +46,7 @@ public:
     FERM_TYPE_ALIASES(FImpl,);
 
     typedef TEmFieldGenerator<VType> EmGen;
-    typedef typename EmGen::GaugeField EmField;
+    typedef typename EmGen::ScalarField PhotonProp;
 
     // constructor
     TQEDSpecs(const std::string name);
@@ -77,7 +77,7 @@ TQEDSpecs<FImpl, VType>::TQEDSpecs(const std::string name)
 template <typename FImpl, typename VType>
 std::vector<std::string> TQEDSpecs<FImpl, VType>::getInput(void)
 {
-    std::vector<std::string> in = {par().q1, par().q2, par().emField};
+    std::vector<std::string> in = {par().q1, par().q2, par().photonProp};
     
     return in;
 }
@@ -106,7 +106,6 @@ template <typename FImpl, typename VType>
 void TQEDSpecs<FImpl, VType>::setup(void)
 {
     envTmp(FFT,            "fft",         1, env().getGrid());
-    envTmp(EmField,        "weight_k",    1, envGetGrid(EmField));
     envTmp(LatticeComplex, "tmpcomplex",  1, envGetGrid(FermionField));
     envTmp(LatticeComplex, "tmpcomplex2", 1, envGetGrid(FermionField));
     envTmp(LatticeReal,    "tmpreal",     1, envGetGrid(FermionField));
@@ -128,13 +127,9 @@ void TQEDSpecs<FImpl, VType>::execute(void)
 
     LOG(Message) << "Starting Specs contraction in Feynman Gauge" << std::endl;
 
-    // Get position-space emField
-    std::cout << "Using emField '" << par().emField << "'" << std::endl;
-    const EmField& weight = envGet(EmField, par().emField);
-
-    // Convert emField to momentum-space
-    envGetTmp(EmField, weight_k);
-    fft.FFT_all_dim(weight_k, weight, FFT::forward);
+    // Get momentum-space photon
+    std::cout << "Using photon propagator '" << par().photonProp << "'" << std::endl;
+    const PhotonProp& photon_prop = envGet(PhotonProp, par().photonProp);
 
     // Fetch env variables
     const PropagatorField& q1 = envGet(PropagatorField, par().q1);
@@ -149,15 +144,14 @@ void TQEDSpecs<FImpl, VType>::execute(void)
 
     // Feynman gauge: photon propagator is delta^{mu, nu}/k^2.
     // Therefore we only need to compute cases where mu=nu.
-    for (int mu=0; mu<4; mu++)
+    for (int mu=0; mu<env().getNd(); mu++)
     {
       // Contract quark loop 1
       tmpcomplex = trace(q1*Gmu[mu]);
 
       // Convolve with photon propagator by multiplying in momentum-space
       fft.FFT_all_dim(tmpcomplex2, tmpcomplex, FFT::forward);
-      const auto& em_val = peekLorentz(weight_k,mu);
-      tmpcomplex = tmpcomplex2 * (em_val * em_val);
+      tmpcomplex = tmpcomplex2 * photon_prop;
       fft.FFT_all_dim(tmpcomplex2,tmpcomplex,FFT::backward);
       
       tmpreal = toReal(imag(tmpcomplex2));
@@ -166,7 +160,8 @@ void TQEDSpecs<FImpl, VType>::execute(void)
       tmpcomplex = trace(q2*Gmu[mu]);
       tmpreal2   = toReal(imag(tmpcomplex));
 
-      result += sum(tmpreal * tmpreal2);
+      // - to account for implicit i^2
+      result += -sum(tmpreal * tmpreal2);
     }
 
     LOG(Message) << "specs: " << result << std::endl;

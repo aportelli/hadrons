@@ -21,7 +21,7 @@ public:
                                     std::string, loop_y,
                                     std::string, loop_z,
                                     std::string, loop_t,
-                                    std::string, emField);
+                                    std::string, photonProp);
 };
 
 template <typename FImpl, typename VType>
@@ -31,7 +31,8 @@ public:
     FERM_TYPE_ALIASES(FImpl,);
 
     typedef TEmFieldGenerator<VType> EmGen;
-    typedef typename EmGen::GaugeField EmField;
+    typedef typename EmGen::GaugeField  EmField;
+    typedef typename EmGen::ScalarField PhotonProp;
 
     // constructor
     TQEDTadpole(const std::string name);
@@ -61,7 +62,7 @@ TQEDTadpole<FImpl, VType>::TQEDTadpole(const std::string name)
 template <typename FImpl, typename VType>
 std::vector<std::string> TQEDTadpole<FImpl, VType>::getInput(void)
 {
-    std::vector<std::string> in = {par().loop_x, par().loop_y, par().loop_z, par().loop_t, par().emField};
+    std::vector<std::string> in = {par().loop_x, par().loop_y, par().loop_z, par().loop_t, par().photonProp};
     
     return in;
 }
@@ -80,7 +81,6 @@ void TQEDTadpole<FImpl, VType>::setup(void)
 {
     envCreateLat(EmField, getName());
     envTmp(FFT,            "fft",         1, env().getGrid());
-    envTmp(EmField,        "Gk",          1, envGetGrid(EmField));
     envTmp(LatticeComplex, "tmpcomplex",  1, envGetGrid(LatticeComplex));
     envTmp(LatticeComplex, "tmpcomplex2", 1, envGetGrid(LatticeComplex));   
 }
@@ -106,27 +106,23 @@ void TQEDTadpole<FImpl, VType>::execute(void)
     const ComplexField& qt = envGet(ComplexField, par().loop_t);
     const ComplexField* q[4] = {&qx, &qy, &qz, &qt};
 
-    const EmField& Gx = envGet(EmField, par().emField);
-    envGetTmp(EmField, Gk);
+    const PhotonProp& photon_prop = envGet(PhotonProp, par().photonProp);
     envGetTmp(LatticeComplex, tmpcomplex);
     envGetTmp(LatticeComplex, tmpcomplex2);
 
-    LOG(Message) << "Using emField '" << par().emField << "'" << std::endl;
+    LOG(Message) << "Using photon propagator '" << par().photonProp << "'" << std::endl;
 
-    // Convert emField to momentum-space
-    fft.FFT_all_dim(Gk, Gx, FFT::forward);
-
-    // Feynman gauge: emField propagator is delta^{mu, nu}/k^2.
+    // Feynman gauge: photon propagator is delta^{mu, nu}/k^2.
     // Therefore we only need to compute cases where mu=nu.
+    Complex ci(0.0,1.0);
     EmField& out = envGet(EmField, getName());
-    for (int mu=0; mu<Nd; mu++)
+    for (int mu=0; mu<4; mu++)
     {
-        // Convolve with emField propagator by multiplying in momentum-space
+        // Convolve with photon propagator by multiplying in momentum-space
         fft.FFT_all_dim(tmpcomplex2, *q[mu], FFT::forward);
-        const auto& em_val = peekLorentz(Gk,mu);
-        tmpcomplex = tmpcomplex2 * (em_val * em_val);
+        tmpcomplex = tmpcomplex2 * photon_prop;
         fft.FFT_all_dim(tmpcomplex2,tmpcomplex,FFT::backward);
-        tmpcomplex = tmpcomplex2;
+        tmpcomplex = ci*tmpcomplex2;
 
         pokeLorentz(out, tmpcomplex, mu);
     }   
