@@ -29,5 +29,6 @@ using namespace Grid;
 using namespace Hadrons;
 using namespace MContraction;
 
-template class HADRONS_NAMESPACE::MContraction::TDiscLoop<FIMPL>;
+template class HADRONS_NAMESPACE::MContraction::TDiscLoop<FIMPL, false>;
+template class HADRONS_NAMESPACE::MContraction::TDiscLoop<FIMPL, true >;
 
